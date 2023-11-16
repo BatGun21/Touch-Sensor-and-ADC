@@ -47,6 +47,8 @@
 /* USER CODE BEGIN PV */
 uint32_t acqVal = 0;
 char acqStr[11];
+char adcStr[11];
+int data = 0;
 
 /* USER CODE END PV */
 
@@ -65,6 +67,11 @@ void DelayMS(unsigned int time);
 void LED_Init(void);
 void UART1_Init(void);
 int adc_check (void);
+int adc_rx(void);
+void intToString16(uint16_t value, char str[]);
+void intToStringInt(int value, char str[]);
+void adc_init(void);
+void tsc_init(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -101,61 +108,12 @@ int main(void)
 
   LED_Init();
   UART1_Init();
-
-  /*------ INIT for TSC -----*/
-  RCC->AHBENR |= RCC_AHBENR_GPIOBEN; // Enabling Clock for Port B
-
-  RCC->AHBENR |= RCC_AHBENR_TSCEN; //Enabling Clock for Touch Sensor
-
-  GPIOB->AFR[0] |= 0x00000033; //Enabling the Alternate Functions for PB0 (Sampling) and PB1 (Channel)
-  GPIOB->MODER |= 0x0000000a; // Setting to Alternate Mode
-  GPIOB->OTYPER |= 0x00000001; // Setting PB0 as Sampling (Open Drain) and PB1 as Channel {output Push Pull}
-  GPIOB->OSPEEDR |= 0x00000003; // Setting as high speed
-
-  // Configuring TSC
-
-  TSC->CR |= (TSC_CR_PGPSC_2 | TSC_CR_PGPSC_0); // Setting the Pulse Generator frequency as fclk/32
-  TSC->CR |=  (TSC_CR_CTPH_0 | TSC_CR_CTPL_0); // Setting the duration of high and low state as 2x tPGCLK
-  TSC->CR |= (TSC_CR_MCV_2 | TSC_CR_MCV_1); // Max Count Value is 16383
+  adc_init();
+  tsc_init();
 
 
-  TSC->IOHCR &= (uint32_t)(~(TSC_IOHCR_G3_IO2 | TSC_IOHCR_G3_IO3)); // Disabling the Hysteresis
-  TSC->IOASCR |= 0x600; // Enabling the analog switch for G3_IO2 and G3_IO3
-  TSC->IER |= TSC_IER_EOAIE; // Enabling End of Acquistion Interrupt
-  TSC->IOSCR |= TSC_IOSCR_G3_IO2; // Sampling enabled for G3IO2
-  TSC->IOCCR |= TSC_IOCCR_G3_IO3; // Channel Enabled for G3IO3
-  TSC->IOGCSR |= TSC_IOGCSR_G3E; // Enable Group 3
-
-  TSC->CR |= TSC_CR_TSCE; // Enabling TSC
 
 
-  /*----- ADC INIT -----*/
-
-  RCC->AHBENR |= RCC_AHBENR_GPIOAEN; // Enabling Clock for GPIOA
-  GPIOA->MODER |= 0x0c; // Setting PA1(ADC_IN1) in analog input mode.
-
-
-  RCC->APB2ENR |= 0x200; // Enabling Clock for ADC
-  RCC->CR2 |= RCC_CR2_HSI14ON; // Turning on dedicated 14MHz Clock for ADC
-  while ((RCC->CR2 & RCC_CR2_HSI14RDY) == 0)
-  {
-	  __NOP();
-  }
-  ADC1->CFGR2 &= (~ADC_CFGR2_CKMODE); // Choosing the Aschronous CLk
-
-
-  ADC1->CFGR1 |= ADC_CFGR1_CONT; // Set ADC to continuous mode
-
-  ADC1->CHSELR |= 0x02; // Select the ADC channel (PA1)
-
-  ADC1->ISR |= ADC_ISR_ADRDY;
-  ADC1->CR |= ADC_CR_ADEN;
-  while ((ADC1->ISR & ADC_ISR_ADRDY) != 0x01)
-  {
-	  __NOP();
-  }
-
-  ADC1->CR |= ADC_CR_ADSTART; // Start ADC conversion
 
   /*  USER CODE END 2 */
   /* Infinite loop */
@@ -163,19 +121,30 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-//	  TSC->CR |= TSC_CR_START; // Start the Touch Sensing
-//	  if ((TSC->ISR & TSC_ISR_EOAF) == TSC_ISR_EOAF){
-//		  acqVal = TSC->IOGXCR[2];  // Get G3 counter value
-//		  TSC->ICR = TSC_ICR_EOAIC; // Clear EOAF
-//	  }
-//	  intToString(acqVal, acqStr);
-//	  UART_Send(acqStr);
-//	  str_empty(acqStr);
-//	  DelayMS(1000);
+//	  TSC->CR |= TSC_CR_START; // Start the Touch Sensing // Uncomment to start
+	  if ((TSC->CR & TSC_CR_START) ==  TSC_CR_START){
+		  if ((TSC->ISR & TSC_ISR_EOAF) == TSC_ISR_EOAF){
+			  acqVal = TSC->IOGXCR[2];  // Get G3 counter value
+			  TSC->ICR = TSC_ICR_EOAIC; // Clear EOAF
+		  }
+		  intToString(acqVal, acqStr);
+		  UART_Send(acqStr);
+		  str_empty(acqStr);
+		  DelayMS(1000);
+	  }
+
 
 	  if (adc_check()){
 
+		  data = adc_rx();
+
+		  intToStringInt(data, adcStr);
+		  UART_Send(adcStr);
+		  UART_Tx('\n');
+		  str_empty(adcStr);
+
 	  }
+	  DelayMS(1000);
 
 
 
@@ -221,16 +190,115 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 
+void tsc_init(void){
+	  /*------ INIT for TSC -----*/
+	  RCC->AHBENR |= RCC_AHBENR_GPIOBEN; // Enabling Clock for Port B
+
+	  RCC->AHBENR |= RCC_AHBENR_TSCEN; //Enabling Clock for Touch Sensor
+
+	  GPIOB->AFR[0] |= 0x00000033; //Enabling the Alternate Functions for PB0 (Sampling) and PB1 (Channel)
+	  GPIOB->MODER |= 0x0000000a; // Setting to Alternate Mode
+	  GPIOB->OTYPER |= 0x00000001; // Setting PB0 as Sampling (Open Drain) and PB1 as Channel {output Push Pull}
+	  GPIOB->OSPEEDR |= 0x00000003; // Setting as high speed
+
+	  // Configuring TSC
+
+	  TSC->CR |= (TSC_CR_PGPSC_2 | TSC_CR_PGPSC_0); // Setting the Pulse Generator frequency as fclk/32
+	  TSC->CR |=  (TSC_CR_CTPH_0 | TSC_CR_CTPL_0); // Setting the duration of high and low state as 2x tPGCLK
+	  TSC->CR |= (TSC_CR_MCV_2 | TSC_CR_MCV_1); // Max Count Value is 16383
+
+
+	  TSC->IOHCR &= (uint32_t)(~(TSC_IOHCR_G3_IO2 | TSC_IOHCR_G3_IO3)); // Disabling the Hysteresis
+	  TSC->IOASCR |= 0x600; // Enabling the analog switch for G3_IO2 and G3_IO3
+	  TSC->IER |= TSC_IER_EOAIE; // Enabling End of Acquistion Interrupt
+	  TSC->IOSCR |= TSC_IOSCR_G3_IO2; // Sampling enabled for G3IO2
+	  TSC->IOCCR |= TSC_IOCCR_G3_IO3; // Channel Enabled for G3IO3
+	  TSC->IOGCSR |= TSC_IOGCSR_G3E; // Enable Group 3
+
+	  TSC->CR |= TSC_CR_TSCE; // Enabling TSC
+
+}
+
+void adc_init(void){
+	  /*----- ADC INIT -----*/
+
+	  RCC->AHBENR |= RCC_AHBENR_GPIOAEN; // Enabling Clock for GPIOA
+	  GPIOA->MODER |= 0x0c; // Setting PA1(ADC_IN1) in analog input mode.
+
+
+	  RCC->APB2ENR |= 0x200; // Enabling Clock for ADC
+	  RCC->CR2 |= RCC_CR2_HSI14ON; // Turning on dedicated 14MHz Clock for ADC
+	  while ((RCC->CR2 & RCC_CR2_HSI14RDY) == 0)
+	  {
+		  __NOP();
+	  }
+	  ADC1->CFGR2 &= (~ADC_CFGR2_CKMODE); // Choosing the Aschronous CLk
+
+
+	  ADC1->CFGR1 |= ADC_CFGR1_CONT; // Set ADC to continuous mode
+
+	  ADC1->CHSELR |= 0x02; // Select the ADC channel (PA1)
+
+	  ADC1->ISR |= ADC_ISR_ADRDY;
+	  ADC1->CR |= ADC_CR_ADEN;
+	  while ((ADC1->ISR & ADC_ISR_ADRDY) != 0x01)
+	  {
+		  __NOP();
+	  }
+
+	  ADC1->CR |= ADC_CR_ADSTART; // Start ADC conversion
+}
+
 int adc_check (void){
 	int check = 0;
-	if ((ADC1->ISR & ADC_ISR_EOC == ADC_ISR_EOC)){
+	if ((ADC1->ISR & ADC_ISR_EOC) == ADC_ISR_EOC){
 		check = 1;
 	}
 	return check;
 }
 
+int adc_rx(void){
+
+	uint16_t adcValue = 0;
+	adcValue = ADC1->DR;
+
+	int adcData = (adcValue*1000)/0xffff;
+	return adcData;
+}
 
 void intToString(uint32_t value, char str[]) {
+    int i = 0;
+
+    if (value == 0) {
+        str[i++] = '0';
+    } else {
+        while (value) {
+            str[i++] = '0' + (value % 10);  // Convert digit to character
+            value /= 10;
+        }
+    }
+
+    str[i] = '\0';  // Null-terminate the string
+    reverseString(str, i);
+}
+
+void intToString16(uint16_t value, char str[]) {
+    int i = 0;
+
+    if (value == 0) {
+        str[i++] = '0';
+    } else {
+        while (value) {
+            str[i++] = '0' + (value % 10);  // Convert digit to character
+            value /= 10;
+        }
+    }
+
+    str[i] = '\0';  // Null-terminate the string
+    reverseString(str, i);
+}
+
+void intToStringInt(int value, char str[]) {
     int i = 0;
 
     if (value == 0) {
